@@ -1,0 +1,530 @@
+Here is your complete, zero-dependency, ultra-juicy arcade game contained entirely within a single HTML file.
+
+The game is called **NEON VORTEX**. You control a agile synthwave ship orbiting a collapsing gravitational core. Your objective is to absorb glowing energy fragments while dodging hyper-velocity neon asteroids that close in rhythmically from the screen edges.
+
+It features real-time procedural sound effects (Web Audio API), dynamic screen shake, particle explosions, a persistent high score system, and zero-friction instant restarts.
+
+### How to Play:
+
+1. Copy the code block below.
+2. Open **Notepad** (or any text editor) on Windows and paste the code.
+3. Save the file as `neon_vortex.html` (Make sure "Save as type" is set to **All Files**).
+4. Double-click the file to launch it instantly in Edge, Chrome, or Firefox.
+5. Use **Left/Right Arrow keys (or A/D)** to orbit, and **Spacebar** to start or fast-restart.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON VORTEX // Overdrive</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+        }
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #05030a;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Setup Canvas Resolution
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Game States: 'MENU', 'PLAYING', 'GAMEOVER'
+        let gameState = 'MENU';
+        let score = 0;
+        let highScore = localStorage.getItem('neon_vortex_highscore') || 0;
+        let lastTime = 0;
+        
+        // Juicing / Visual effects
+        let screenShake = 0;
+        let scorePop = 0;
+        let globalPulse = 0;
+
+        // Audio System (Procedural Web Audio API)
+        let audioCtx = null;
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        function playSound(type) {
+            if (!audioCtx) return;
+            
+            // Resume context if suspended (browser security feature)
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            const now = audioCtx.currentTime;
+
+            if (type === 'score') {
+                // High-pitched synthesized blip
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(587.33, now); // D5
+                osc.frequency.exponentialRampToValueAtTime(1174.66, now + 0.1); // D6
+                gain.gain.setValueAtTime(0.1, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+                osc.start(now);
+                osc.stop(now + 0.15);
+            } else if (type === 'explosion') {
+                // Low-pitched detuning noise blast
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(120, now);
+                osc.frequency.linearRampToValueAtTime(10, now + 0.5);
+                gain.gain.setValueAtTime(0.3, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+                osc.start(now);
+                osc.stop(now + 0.6);
+            } else if (type === 'start') {
+                // Futuristic arcade upward sweep
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(220, now);
+                osc.frequency.exponentialRampToValueAtTime(880, now + 0.3);
+                gain.gain.setValueAtTime(0.15, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+                osc.start(now);
+                osc.stop(now + 0.3);
+            }
+        }
+
+        // Input Handling
+        const keys = { ArrowLeft: false, ArrowRight: false, KeyA: false, KeyD: false, Space: false };
+        
+        window.addEventListener('keydown', (e) => {
+            initAudio(); // Initialize audio on first keystroke
+            if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.ArrowLeft = true;
+            if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.ArrowRight = true;
+            if (e.code === 'Space') {
+                if (gameState === 'MENU' || gameState === 'GAMEOVER') {
+                    resetGame();
+                }
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.ArrowLeft = false;
+            if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.ArrowRight = false;
+        });
+
+        // Game Objects definitions
+        let player = {
+            angle: 0,
+            radius: 120, // Distance from center vortex
+            size: 14,
+            speed: 5 // Angular velocity speed
+        };
+
+        let obstacles = [];
+        let collectibles = [];
+        let particles = [];
+        
+        // Spawn rates and difficulty tracking
+        let spawnTimer = 0;
+        let difficultyLevel = 1;
+        let timeSurvied = 0;
+
+        function resetGame() {
+            score = 0;
+            player.angle = 0;
+            player.radius = 130;
+            obstacles = [];
+            collectibles = [];
+            particles = [];
+            spawnTimer = 0;
+            difficultyLevel = 1;
+            timeSurvied = 0;
+            gameState = 'PLAYING';
+            playSound('start');
+        }
+
+        function createExplosion(x, y, color, count = 15) {
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 4 + 2;
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: Math.cos(angle) * speed,
+                    vy: Math.sin(angle) * speed,
+                    radius: Math.random() * 3 + 1,
+                    alpha: 1,
+                    decay: Math.random() * 0.03 + 0.01,
+                    color: color
+                });
+            }
+        }
+
+        function spawnWave(cx, cy) {
+            // Speed scaling over time to enhance adrenaline rush
+            const baseSpeed = 2 + (difficultyLevel * 0.4);
+            
+            // Randomly decide to spawn an obstacle or collectible
+            if (Math.random() < 0.65) {
+                // Spawn Threat from edges towards center
+                const angle = Math.random() * Math.PI * 2;
+                const spawnRadius = Math.max(canvas.width, canvas.height) * 0.7;
+                obstacles.push({
+                    x: cx + Math.cos(angle) * spawnRadius,
+                    y: cy + Math.sin(angle) * spawnRadius,
+                    vx: -Math.cos(angle) * baseSpeed,
+                    vy: -Math.sin(angle) * baseSpeed,
+                    size: Math.random() * 12 + 10,
+                    color: '#ff0055'
+                });
+            }
+
+            // Keep feeding collectibles so the player moves frantically
+            if (collectibles.length < 3 && Math.random() < 0.4) {
+                const angle = Math.random() * Math.PI * 2;
+                collectibles.push({
+                    angle: angle,
+                    radius: player.radius, // Sits directly on orbit line
+                    size: 8,
+                    pulse: 0,
+                    color: '#00ffcc'
+                });
+            }
+        }
+
+        // Core Game Engine Loop
+        function update(dt) {
+            if (gameState === 'PLAYING') {
+                timeSurvied += dt;
+                difficultyLevel = 1 + Math.floor(timeSurvied / 10); // Escalate every 10 seconds
+
+                const cx = canvas.width / 2;
+                const cy = canvas.height / 2;
+
+                // Move Player Around Vortex Ring
+                if (keys.ArrowLeft) player.angle -= player.speed * dt;
+                if (keys.ArrowRight) player.angle += player.speed * dt;
+
+                // Dynamically breathe orbit line
+                player.radius = 130 + Math.sin(timeSurvied * 4) * 5;
+
+                const playerX = cx + Math.cos(player.angle) * player.radius;
+                const playerY = cy + Math.sin(player.angle) * player.radius;
+
+                // Spawning Pipeline
+                spawnTimer += dt;
+                const spawnInterval = Math.max(0.2, 0.6 - (difficultyLevel * 0.05));
+                if (spawnTimer >= spawnInterval) {
+                    spawnWave(cx, cy);
+                    spawnTimer = 0;
+                }
+
+                // Update Obstacles
+                for (let i = obstacles.length - 1; i >= 0; i--) {
+                    let obs = obstacles[i];
+                    obs.x += obs.vx * dt * 60;
+                    obs.y += obs.vy * dt * 60;
+
+                    // Hit checks against player ship
+                    let distToPlayer = Math.hypot(obs.x - playerX, obs.y - playerY);
+                    if (distToPlayer < obs.size + player.size - 2) {
+                        // Dead! Trigger Game Over state instantly
+                        gameState = 'GAMEOVER';
+                        screenShake = 30;
+                        createExplosion(playerX, playerY, '#ffff00', 30);
+                        createExplosion(playerX, playerY, '#ff0055', 40);
+                        playSound('explosion');
+                        if (score > highScore) {
+                            highScore = score;
+                            localStorage.setItem('neon_vortex_highscore', highScore);
+                        }
+                        return;
+                    }
+
+                    // Remove if passed through core completely
+                    let distToCenter = Math.hypot(obs.x - cx, obs.y - cy);
+                    if (distToCenter < 15) {
+                        obstacles.splice(i, 1);
+                    }
+                }
+
+                // Update Collectibles
+                for (let i = collectibles.length - 1; i >= 0; i--) {
+                    let col = collectibles[i];
+                    col.pulse += dt * 10;
+                    
+                    let colX = cx + Math.cos(col.angle) * col.radius;
+                    let colY = cy + Math.sin(col.angle) * col.radius;
+
+                    let distToPlayer = Math.hypot(colX - playerX, colY - playerY);
+                    if (distToPlayer < col.size + player.size) {
+                        // Score point gathered!
+                        score += 10;
+                        scorePop = 15; // Trigger score UI text punch
+                        screenShake = 4;
+                        createExplosion(colX, colY, '#00ffcc', 12);
+                        playSound('score');
+                        collectibles.splice(i, 1);
+                    }
+                }
+            }
+
+            // Update Particles always (even at gameover for dynamic debris)
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.alpha -= p.decay;
+                if (p.alpha <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+
+            // Decay Juice Effects
+            if (screenShake > 0) screenShake *= 0.9;
+            if (scorePop > 0) scorePop -= dt * 40;
+            globalPulse += dt * 3;
+        }
+
+        // Render Frame
+        function draw() {
+            ctx.save();
+            
+            // Screen Shake translation setup
+            if (screenShake > 0.5) {
+                let dx = (Math.random() - 0.5) * screenShake;
+                let dy = (Math.random() - 0.5) * screenShake;
+                ctx.translate(dx, dy);
+            }
+
+            // Clear Scene with trailing alpha fade for motion glow paths
+            ctx.fillStyle = 'rgba(5, 3, 10, 0.25)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+
+            // Draw Background Cyber Grid Geometry Lines
+            ctx.strokeStyle = 'rgba(255, 0, 150, 0.04)';
+            ctx.lineWidth = 1;
+            const step = 80;
+            for (let x = 0; x < canvas.width; x += step) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += step) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+
+            // Draw Central Black Hole Vortex Core
+            let corePulse = 35 + Math.sin(globalPulse) * 4;
+            ctx.shadowBlur = 20;
+            ctx.shadowColor = '#bd00ff';
+            ctx.fillStyle = '#120224';
+            ctx.beginPath();
+            ctx.arc(cx, cy, corePulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#bd00ff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.shadowBlur = 0; // reset
+
+            if (gameState === 'PLAYING' || gameState === 'GAMEOVER') {
+                // Draw Active Boundary Orbit pathing line
+                ctx.strokeStyle = 'rgba(0, 255, 204, 0.15)';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([4, 8]);
+                ctx.beginPath();
+                ctx.arc(cx, cy, player.radius, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.setLineDash([]); // clear dash
+
+                // Draw Collectibles
+                collectibles.forEach(col => {
+                    let colX = cx + Math.cos(col.angle) * col.radius;
+                    let colY = cy + Math.sin(col.angle) * col.radius;
+                    let sizeOsc = col.size + Math.sin(col.pulse) * 3;
+
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = col.color;
+                    ctx.fillStyle = col.color;
+                    ctx.beginPath();
+                    // Diamond styling
+                    ctx.moveTo(colX, colY - sizeOsc);
+                    ctx.lineTo(colX + sizeOsc, colY);
+                    ctx.lineTo(colX, colY + sizeOsc);
+                    ctx.lineTo(colX - sizeOsc, colY);
+                    ctx.closePath();
+                    ctx.fill();
+                });
+
+                // Draw Incoming Threat Obstacles
+                obstacles.forEach(obs => {
+                    ctx.shadowBlur = 12;
+                    ctx.shadowColor = obs.color;
+                    ctx.fillStyle = obs.color;
+                    ctx.beginPath();
+                    ctx.arc(obs.x, obs.y, obs.size, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+
+                // Draw Player Ship (If Alive)
+                if (gameState === 'PLAYING') {
+                    let pX = cx + Math.cos(player.angle) * player.radius;
+                    let pY = cy + Math.sin(player.angle) * player.radius;
+
+                    ctx.save();
+                    ctx.translate(pX, pY);
+                    ctx.rotate(player.angle + Math.PI / 2); // Face forward tangentially
+
+                    ctx.shadowBlur = 15;
+                    ctx.shadowColor = '#ffff00';
+                    ctx.fillStyle = '#ffff00';
+                    
+                    // Sleek Triangle Arrowcraft
+                    ctx.beginPath();
+                    ctx.moveTo(0, -player.size);
+                    ctx.lineTo(-player.size * 0.8, player.size);
+                    ctx.lineTo(player.size * 0.8, player.size);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.restore();
+                }
+            }
+
+            // Draw Explosive Spark Particles
+            particles.forEach(p => {
+                ctx.save();
+                ctx.globalAlpha = p.alpha;
+                ctx.fillStyle = p.color;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            });
+
+            // --- UI RENDER SYSTEM ---
+            ctx.shadowBlur = 0;
+            
+            if (gameState === 'PLAYING') {
+                // Top Centered Clean Real-time Dashboard
+                let sizeMod = Math.max(24, 24 + scorePop);
+                ctx.fillStyle = '#00ffcc';
+                ctx.font = `bold ${sizeMod}px "Courier New"`;
+                ctx.textAlign = 'center';
+                ctx.fillText(`SCORE: ${score}`, cx, 50);
+
+                ctx.fillStyle = 'rgba(255,255,255,0.4)';
+                ctx.font = '14px "Courier New"';
+                ctx.fillText(`MULT-STAGE OVERDRIVE: x${difficultyLevel}`, cx, 80);
+            } 
+            else if (gameState === 'MENU') {
+                // Splash Header
+                ctx.fillStyle = '#ff0055';
+                ctx.font = 'bold 52px "Courier New"';
+                ctx.textAlign = 'center';
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = '#ff0055';
+                ctx.fillText("NEON VORTEX", cx, cy - 80);
+
+                ctx.fillStyle = '#00ffcc';
+                ctx.font = '20px "Courier New"';
+                ctx.shadowColor = '#00ffcc';
+                ctx.fillText("ORBIT. SURVIVE. ABSORB.", cx, cy - 30);
+
+                // Flashing action prompt
+                let alphaFlashing = Math.abs(Math.sin(globalPulse * 1.5));
+                ctx.fillStyle = `rgba(255, 255, 255, ${alphaFlashing})`;
+                ctx.shadowBlur = 0;
+                ctx.font = 'bold 18px "Courier New"';
+                ctx.fillText("PRESS SPACEBAR TO ENGAGE", cx, cy + 50);
+
+                // Instructions panel
+                ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                ctx.font = '14px "Courier New"';
+                ctx.fillText("Controls: A/D or LEFT/RIGHT Arrows to Orbit", cx, cy + 120);
+                ctx.fillText("Goal: Collect blue diamonds. Avoid pink meteors.", cx, cy + 145);
+            } 
+            else if (gameState === 'GAMEOVER') {
+                // Dramatic Defeat Screen
+                ctx.fillStyle = '#ff0055';
+                ctx.font = 'bold 46px "Courier New"';
+                ctx.textAlign = 'center';
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = '#ff0055';
+                ctx.fillText("SYSTEM CRITICAL: CORE DESTROYED", cx, cy - 100);
+
+                ctx.shadowBlur = 0;
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '24px "Courier New"';
+                ctx.fillText(`FINAL RUN SCORE: ${score}`, cx, cy - 30);
+                
+                if (score >= highScore && score > 0) {
+                    ctx.fillStyle = '#ffff00';
+                    ctx.font = 'bold 20px "Courier New"';
+                    ctx.fillText(`NEW ALL-TIME RECORD CRACKED!`, cx, cy + 5);
+                } else {
+                    ctx.fillStyle = '#00ffcc';
+                    ctx.font = '20px "Courier New"';
+                    ctx.fillText(`ALL-TIME HIGH SCORE: ${highScore}`, cx, cy + 5);
+                }
+
+                let alphaFlashing = Math.abs(Math.sin(globalPulse * 1.5));
+                ctx.fillStyle = `rgba(255, 255, 255, ${alphaFlashing})`;
+                ctx.font = 'bold 18px "Courier New"';
+                ctx.fillText("PRESS SPACEBAR TO INSTANT REBOOT", cx, cy + 90);
+            }
+
+            ctx.restore();
+        }
+
+        // Standardized Frame Loop execution ticker
+        function loop(timestamp) {
+            if (!lastTime) lastTime = timestamp;
+            let dt = (timestamp - lastTime) / 1000;
+            
+            // Protect framework state mechanics from stalling context tags
+            if (dt > 0.1) dt = 0.1; 
+
+            lastTime = timestamp;
+
+            update(dt);
+            draw();
+
+            requestAnimationFrame(loop);
+        }
+
+        // Kick off engine cycle
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
+
+```
